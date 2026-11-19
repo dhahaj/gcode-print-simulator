@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>G-code Print Simulator</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #15171a; --panel: #1c1f23; --panel-2: #24282d; --line: #33383f;
+  --text: #e8eaed; --muted: #a3aab3; --accent: #fa6831; --accent-ink: #1a0d06;
+  --warn: #ffc466; --err: #ff8f85;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.4 "Segoe UI", system-ui, sans-serif; }
+#app { display: grid; grid-template-columns: minmax(0, 1fr) 328px; height: 100vh; }
+#stage { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+#viewport { position: relative; display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; background: #0d0e10; }
+#gl { display: block; touch-action: none; cursor: grab; }
+#gl:active { cursor: grabbing; }
+#drop { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+#drop .card { pointer-events: auto; text-align: center; background: rgba(20, 22, 25, .86); border: 1px solid var(--line); border-radius: 12px; padding: 24px 30px; max-width: 400px; margin: 16px; }
+#drop h1 { font-size: 20px; margin: 0 0 6px; font-weight: 600; }
+#drop p { margin: 0 0 16px; color: var(--muted); }
+#viewport.dragging::after { content: "Drop G-code to load"; position: absolute; inset: 12px; border: 2px dashed var(--accent); border-radius: 12px; background: rgba(250, 104, 49, .1); display: flex; align-items: center; justify-content: center; font-size: 20px; pointer-events: none; }
+#busy { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(20, 22, 25, .94); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; min-width: 260px; }
+#transport { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--panel); border-top: 1px solid var(--line); }
+#scrub { flex: 1; min-width: 0; }
+#clock { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+#panel { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding-bottom: 16px; }
+section { padding: 14px 16px 16px; border-bottom: 1px solid var(--line); }
+section:last-child { border-bottom: 0; }
+h2 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+label.row, .row { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 8px; }
+.row > span { color: var(--muted); }
+input[type=number], input[type=text], select { width: 100%; height: 32px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 0 8px; font: inherit; }
+input[type=color] { width: 44px; height: 32px; padding: 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+input[type=range] { accent-color: var(--accent); }
+input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+:is(button, input, select):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button { height: 34px; padding: 0 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font: inherit; cursor: pointer; }
+button:hover:not(:disabled) { border-color: #59616b; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.wide { width: 100%; margin-top: 12px; }
+#play { width: 40px; padding: 0; font-size: 14px; }
+.colorline { display: flex; gap: 8px; align-items: center; }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.swatches button { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .25); }
+.swatches button[aria-pressed=true] { border-color: #fff; }
+.check { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.btnline { display: flex; gap: 8px; }
+.btnline button { flex: 1; padding: 0 8px; }
+.hint { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
+#fileinfo { margin: 10px 0 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; }
+#fileinfo dt { color: var(--muted); }
+#fileinfo dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+#warn { color: var(--warn); font-size: 13px; margin: 10px 0 0; }
+#status { font-size: 13px; margin: 10px 0 0; color: var(--muted); min-height: 18px; }
+#status.err { color: var(--err); }
+.bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 10px; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
+[hidden] { display: none !important; }
+@media (max-width: 860px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: 56vh minmax(0, 1fr); }
+  #panel { border-left: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <main id="stage">
+    <div id="viewport">
+      <canvas id="gl" aria-label="3D print preview. Drag to rotate, scroll to zoom."></canvas>
+      <div id="drop"><div class="card">
+        <h1>G-code Print Simulator</h1>
+        <p>Drop a .gcode file here to preview the print and export it as a video.</p>
+        <button class="primary" id="openBig">Open G-code</button>
+      </div></div>
+      <div id="busy" hidden><div id="busyText">Reading G-code</div><div class="bar"><i id="busyBar"></i></div></div>
+    </div>
+    <div id="transport">
+      <button id="play" aria-label="Play" disabled>&#9654;</button>
+      <input id="scrub" type="range" min="0" max="10000" value="0" step="1" aria-label="Video position" disabled>
+      <span id="clock">0:00 / 0:00</span>
+    </div>
+  </main>
+
+  <aside id="panel">
+    <section>
+      <h2>G-code file</h2>
+      <button id="open" style="width:100%">Open G-code</button>
+      <input id="file" type="file" accept=".gcode,.gco,.gc,.g,.nc,.txt" hidden>
+      <dl id="fileinfo" hidden></dl>
+      <p id="warn" hidden></p>
+    </section>
+
+    <section>
+      <h2>Printer</h2>
+      <label class="row"><span>Preset</span>
+        <select id="preset"><option value="mk3s">Prusa MK3S / MK3S+</option><option value="custom">Custom</option></select></label>
+      <label class="row"><span>Bed width X</span><input id="bedX" type="number" min="50" max="1000" step="1"></label>
+      <label class="row"><span>Bed depth Y</span><input id="bedY" type="number" min="50" max="1000" step="1"></label>
+      <label class="row"><span>Build height Z</span><input id="bedZ" type="number" min="20" max="1000" step="1"></label>
+      <label class="row"><span>Bed label</span><input id="label" type="text" maxlength="40"></label>
+      <div class="row"><span>Bed image</span>
+        <div class="btnline"><button id="bedPick">Choose</button><button id="bedReset" disabled>Reset</button></div></div>
+      <input id="bedFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg" hidden>
+      <p class="hint" id="bedHint">Using the built-in MK3S sheet.</p>
+    </section>
+
+    <section>
+      <h2>Filament</h2>
+      <div class="row"><span>Color</span>
+        <div class="colorline"><input id="color" type="color" aria-label="Filament color"><input id="colorHex" type="text" maxlength="7" aria-label="Filament color hex value"></div></div>
+      <div class="swatches" id="swatches"></div>
+      <label class="row"><span>Finish</span>
+        <select id="finish"><option value="matte">Matte</option><option value="satin">Satin</option><option value="glossy">Glossy</option><option value="silk">Silk</option></select></label>
+    </section>
+
+    <section>
+      <h2>View</h2>
+      <label class="row"><span>Camera</span>
+        <select id="camMode"><option value="orbit">Slow orbit</option><option value="fixed">Fixed</option><option value="follow">Follow nozzle</option><option value="top">Top down</option></select></label>
+      <label class="check"><input id="showNozzle" type="checkbox"> Show nozzle</label>
+      <label class="check"><input id="showTravel" type="checkbox"> Show travel moves</label>
+      <label class="check"><input id="showVolume" type="checkbox"> Show build volume</label>
+      <label class="check"><input id="showHud" type="checkbox"> Show layer and time overlay</label>
+      <p class="hint">Drag to rotate, right-drag to pan, scroll to zoom, double-click to reset.</p>
+    </section>
+
+    <section>
+      <h2>Video</h2>
+      <label class="row"><span>Resolution</span>
+        <select id="res">
+          <option value="1280x720">720p (1280 × 720)</option>
+          <option value="1920x1080">1080p (1920 × 1080)</option>
+          <option value="2560x1440">1440p (2560 × 1440)</option>
+          <option value="3840x2160">4K (3840 × 2160)</option>
+          <option value="1080x1080">Square (1080 × 1080)</option>
+          <option value="1080x1920">Vertical (1080 × 1920)</option>
+        </select></label>
+      <label class="row"><span>Frame rate</span>
+        <select id="fps"><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select></label>
+      <label class="row"><span>Length (sec)</span><input id="length" type="number" min="3" max="3600" step="1"></label>
+      <label class="row"><span>Quality</span>
+        <select id="quality"><option value="standard">Standard</option><option value="high">High</option><option value="max">Maximum</option></select></label>
+      <p class="hint" id="speedInfo"></p>
+      <button class="primary wide" id="export" disabled>Export MP4</button>
+      <button class="wide" id="cancel" hidden>Cancel export</button>
+      <div class="bar" id="expBarWrap" hidden><i id="expBar"></i></div>
+      <p id="status" role="status"></p>
+    </section>
+  </aside>
+</div>
+<script type="text/plain" id="parser-src">/*__PARSER__*/</script>
+<script>/*__APP__*/</script>
+</body>
+</html>
